@@ -1,99 +1,95 @@
 // ==============================================
-// DOM-X BOT — FULL REBUILD WITH COMMANDS
+// DOM-X WHATSAPP BOT — FULL PAIRING ENABLED
 // ==============================================
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+
+const { default: makeWASocket, DisconnectReason, useSingleFileAuthState } = require('@whiskeysockets/baileys');
 const P = require('pino');
 const axios = require('axios');
 
 const express = require('express');
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 3000;
 
-// -------------------
-// In-memory storage
-// -------------------
-let pairingCodes = {}; // senderId -> code
+// ===== BOT AUTH STATE =====
+const { state, saveState } = useSingleFileAuthState('./auth_info.json');
 
-// -------------------
-// Express endpoint to fetch pairing code from your website
-// -------------------
-app.get('/code', async (req, res) => {
-    const { number } = req.query;
-    if (!number) return res.json({ code: 'Failed', message: 'No number provided' });
+// ===== PAIRING STORAGE =====
+const activePairs = {}; // phoneNumber -> WhatsApp JID
 
-    try {
-        const response = await axios.get(`https://domgen-bot2.onrender.com/code?number=${number}`);
-        res.json({ code: response.data.code || 'Failed' });
-    } catch (err) {
-        res.json({ code: 'Failed', message: 'Error fetching code' });
+// ===== RENDER SERVER URL =====
+const SERVER_URL = "https://domgen-bot2.onrender.com";
+
+// ===== INIT BOT =====
+async function startBot() {
+  const sock = makeWASocket({
+    logger: P({ level: 'silent' }),
+    printQRInTerminal: true,
+    auth: state
+  });
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect } = update;
+    if (connection === 'close') {
+      if ((lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut) {
+        startBot();
+      }
     }
-});
+    if (connection === 'open') {
+      console.log('✅ Bot connected!');
+    }
+  });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  sock.ev.on('messages.upsert', async (m) => {
+    const msg = m.messages[0];
+    if (!msg.message || msg.key.fromMe) return;
 
-// -------------------
-// WhatsApp Bot Setup
-// -------------------
-(async () => {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    const from = msg.key.remoteJid;
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
 
-    const sock = makeWASocket({
-        logger: P({ level: 'silent' }),
-        printQRInTerminal: true,
-        auth: state
-    });
+    if (!text) return;
 
-    sock.ev.on('creds.update', saveCreds);
+    // ===== PAIR COMMAND =====
+    if (text.startsWith('/pair')) {
+      const args = text.split(' ');
+      if (args.length < 2) {
+        await sock.sendMessage(from, { text: '❌ Usage: /pair <your 6-digit code from website>' });
+        return;
+      }
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-        if(connection === 'close') {
-            const reason = lastDisconnect.error?.output?.statusCode;
-            console.log('Disconnected:', reason);
-        } else if(connection === 'open') {
-            console.log('Bot connected!');
+      const code = args[1];
+
+      try {
+        const { data } = await axios.get(`${SERVER_URL}/verify?code=${code}&number=${from.replace('@s.whatsapp.net','')}`);
+        if (data.success) {
+          activePairs[from] = true;
+          await sock.sendMessage(from, { text: '✅ Pairing successful! You can now use bot commands.' });
+        } else {
+          await sock.sendMessage(from, { text: '❌ Invalid or expired code. Please get a new code from the website.' });
         }
-    });
+      } catch (err) {
+        console.error(err);
+        await sock.sendMessage(from, { text: '❌ Error connecting to the server. Try again later.' });
+      }
+      return;
+    }
 
-    // -------------------
-    // Command handling
-    // -------------------
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+    // ===== SAMPLE COMMAND AFTER PAIRING =====
+    if (text.startsWith('/hello')) {
+      if (!activePairs[from]) {
+        await sock.sendMessage(from, { text: '❌ You must pair first using /pair <code>' });
+        return;
+      }
+      await sock.sendMessage(from, { text: '👋 Hello! Bot is active.' });
+    }
+  });
 
-        const sender = msg.key.remoteJid;
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
-        if (!text) return;
+  sock.ev.on('creds.update', saveState);
+}
 
-        const cmd = text.toLowerCase();
+startBot().catch(console.error);
 
-        // --- START ---
-        if (cmd === '/start') {
-            await sock.sendMessage(sender, { text: 'Hello! Welcome to DOM-X Bot.\nUse /pair to get your pairing code.\nUse /help for commands.' });
-        }
+// ===== OPTIONAL EXPRESS API =====
+// You can also host a small API if needed
+app.get('/', (req, res) => res.send('DOM-X Bot is running!'));
 
-        // --- HELP ---
-        else if (cmd === '/help') {
-            await sock.sendMessage(sender, { text: 'Available commands:\n/start - Welcome message\n/pair - Get pairing code\n/help - Show commands' });
-        }
-
-        // --- PAIR ---
-        else if (cmd === '/pair') {
-            try {
-                // fetch pairing code from your website
-                const res = await axios.get(`https://domgen-bot2.onrender.com/code?number=${sender.replace('@s.whatsapp.net','')}`);
-                const code = res.data.code || Math.floor(100000 + Math.random() * 900000).toString();
-                pairingCodes[sender] = code;
-
-                await sock.sendMessage(sender, { text: `Your pairing code is:\n${code}\nEnter this code in your website to link your device.` });
-            } catch (err) {
-                await sock.sendMessage(sender, { text: 'Error fetching pairing code. Try again later.' });
-                console.error(err);
-            }
-        }
-    });
-
-})();
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
