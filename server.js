@@ -1,5 +1,6 @@
 const express = require("express");
 const P = require("pino");
+const QRCode = require("qrcode");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -11,10 +12,11 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 🔥 IMPORTANT FOR RENDER PERSISTENT DISK
+// 🔥 For Render Persistent Disk
 const SESSION_PATH = "/opt/render/project/src/session";
 
 let sock;
+let qrCodeData = null;
 let startTime = Date.now();
 
 // ================= START BOT =================
@@ -35,7 +37,11 @@ async function startBot() {
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      qrCodeData = qr;
+    }
 
     if (connection === "close") {
       const shouldReconnect =
@@ -46,6 +52,7 @@ async function startBot() {
 
     if (connection === "open") {
       console.log("✅ Bot Connected");
+      qrCodeData = null;
     }
   });
 
@@ -60,16 +67,16 @@ async function startBot() {
       msg.message.extendedTextMessage?.text ||
       "";
 
-    const prefix = ".";
-    if (!text.startsWith(prefix)) return;
+    if (!text.startsWith(".")) return;
 
-    const args = text.slice(1).trim().split(" ");
-    const command = args.shift().toLowerCase();
+    const command = text.slice(1).toLowerCase();
 
-    // ========= UPTIME =========
+    if (command === "ping") {
+      await sock.sendMessage(from, { text: "🏓 Pong!" });
+    }
+
     if (command === "uptime") {
       const uptime = Math.floor((Date.now() - startTime) / 1000);
-
       const hours = Math.floor(uptime / 3600);
       const minutes = Math.floor((uptime % 3600) / 60);
       const seconds = uptime % 60;
@@ -81,32 +88,17 @@ async function startBot() {
 > *ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐃Ω𝐌𝐆Ξ𝐍©*
 `;
 
-      await sock.sendMessage(from, {
-        text: uptimeText,
-        contextInfo: {
-          forwardingScore: 999,
-          isForwarded: true,
-          forwardedNewsletterMessageInfo: {
-            newsletterJid: "120363413766641596@newsletter",
-            newsletterName: "𝐃Ω𝐌𝐆Ξ𝐍-𝑴𝑫 𝑩𝑶𝑻",
-            serverMessageId: Math.floor(Math.random() * 1_000_000_000),
-          },
-        },
-      });
-    }
-
-    // ========= PING =========
-    if (command === "ping") {
-      await sock.sendMessage(from, { text: "🏓 Pong!" });
+      await sock.sendMessage(from, { text: uptimeText });
     }
   });
 }
 
 startBot();
 
-// ================= WEBSITE ROUTES =================
+// ================= SERVE WEBSITE =================
+app.use(express.static("public"));
 
-// Pairing Code API
+// Pairing Code Route
 app.get("/code", async (req, res) => {
   const number = req.query.number;
 
@@ -122,16 +114,30 @@ app.get("/code", async (req, res) => {
   }
 });
 
-// Home Route
-app.get("/", (req, res) => {
-  res.send("𝐃Ω𝐌𝐆Ξ𝐍-𝑴𝑫 BOT + WEBSITE CONNECTED ✅");
+// QR Route
+app.get("/qr", async (req, res) => {
+  if (!qrCodeData) {
+    return res.send("<h2>No QR available. Restart server.</h2>");
+  }
+
+  const qrImage = await QRCode.toDataURL(qrCodeData);
+
+  res.send(`
+    <html>
+    <head><title>QR Code</title></head>
+    <body style="text-align:center;background:#121212;color:white;">
+        <h2>Scan QR Code</h2>
+        <img src="${qrImage}" />
+    </body>
+    </html>
+  `);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log("🚀 Server running on port " + PORT);
 });
 
-// 🔥 Prevent Render idle freeze
+// Prevent Render sleep spam
 setInterval(() => {
   console.log("Bot still alive...");
 }, 30000);
