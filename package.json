@@ -1,14 +1,14 @@
 {
-  "name": "domgen-bot",
+  "name": "Dom-X-bot",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
+    "@whiskeysockets/baileys": "^5.0.0",
+    "axios": "^1.4.0",
     "express": "^4.18.2",
-    "pino": "^8.0.0",
-    "qrcode": "^1.5.3"
+    "pino": "^8.12.0"
   }
 }
