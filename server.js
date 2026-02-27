@@ -1,143 +1,99 @@
-const express = require("express");
-const P = require("pino");
-const QRCode = require("qrcode");
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  makeCacheableSignalKeyStore,
-  fetchLatestBaileysVersion
-} = require("@whiskeysockets/baileys");
+// ==============================================
+// DOM-X BOT — FULL REBUILD WITH COMMANDS
+// ==============================================
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const P = require('pino');
+const axios = require('axios');
 
+const express = require('express');
 const app = express();
+app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
 
-// 🔥 For Render Persistent Disk
-const SESSION_PATH = "/opt/render/project/src/session";
+// -------------------
+// In-memory storage
+// -------------------
+let pairingCodes = {}; // senderId -> code
 
-let sock;
-let qrCodeData = null;
-let startTime = Date.now();
+// -------------------
+// Express endpoint to fetch pairing code from your website
+// -------------------
+app.get('/code', async (req, res) => {
+    const { number } = req.query;
+    if (!number) return res.json({ code: 'Failed', message: 'No number provided' });
 
-// ================= START BOT =================
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_PATH);
-  const { version } = await fetchLatestBaileysVersion();
-
-  sock = makeWASocket({
-    version,
-    logger: P({ level: "silent" }),
-    printQRInTerminal: false,
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, P({ level: "silent" })),
-    },
-  });
-
-  sock.ev.on("creds.update", saveCreds);
-
-  sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      qrCodeData = qr;
+    try {
+        const response = await axios.get(`https://domgen-bot2.onrender.com/code?number=${number}`);
+        res.json({ code: response.data.code || 'Failed' });
+    } catch (err) {
+        res.json({ code: 'Failed', message: 'Error fetching code' });
     }
-
-    if (connection === "close") {
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-
-      if (shouldReconnect) startBot();
-    }
-
-    if (connection === "open") {
-      console.log("✅ Bot Connected");
-      qrCodeData = null;
-    }
-  });
-
-  // ================= COMMAND HANDLER =================
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
-
-    const from = msg.key.remoteJid;
-    const text =
-      msg.message.conversation ||
-      msg.message.extendedTextMessage?.text ||
-      "";
-
-    if (!text.startsWith(".")) return;
-
-    const command = text.slice(1).toLowerCase();
-
-    if (command === "ping") {
-      await sock.sendMessage(from, { text: "🏓 Pong!" });
-    }
-
-    if (command === "uptime") {
-      const uptime = Math.floor((Date.now() - startTime) / 1000);
-      const hours = Math.floor(uptime / 3600);
-      const minutes = Math.floor((uptime % 3600) / 60);
-      const seconds = uptime % 60;
-
-      const uptimeText = `
-> ╭━━━━━━━━
-> ┃ *Uptime:* ${hours}h ${minutes}m ${seconds}s
-> ╰━━━━━━━━
-> *ᴘᴏᴡᴇʀᴇᴅ ʙʏ 𝐃Ω𝐌𝐆Ξ𝐍©*
-`;
-
-      await sock.sendMessage(from, { text: uptimeText });
-    }
-  });
-}
-
-startBot();
-
-// ================= SERVE WEBSITE =================
-app.use(express.static("public"));
-
-// Pairing Code Route
-app.get("/code", async (req, res) => {
-  const number = req.query.number;
-
-  if (!number) {
-    return res.json({ code: "ENTER NUMBER" });
-  }
-
-  try {
-    const code = await sock.requestPairingCode(number);
-    res.json({ code });
-  } catch (err) {
-    res.json({ code: "FAILED" });
-  }
 });
 
-// QR Route
-app.get("/qr", async (req, res) => {
-  if (!qrCodeData) {
-    return res.send("<h2>No QR available. Restart server.</h2>");
-  }
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-  const qrImage = await QRCode.toDataURL(qrCodeData);
+// -------------------
+// WhatsApp Bot Setup
+// -------------------
+(async () => {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
 
-  res.send(`
-    <html>
-    <head><title>QR Code</title></head>
-    <body style="text-align:center;background:#121212;color:white;">
-        <h2>Scan QR Code</h2>
-        <img src="${qrImage}" />
-    </body>
-    </html>
-  `);
-});
+    const sock = makeWASocket({
+        logger: P({ level: 'silent' }),
+        printQRInTerminal: true,
+        auth: state
+    });
 
-app.listen(PORT, () => {
-  console.log("🚀 Server running on port " + PORT);
-});
+    sock.ev.on('creds.update', saveCreds);
 
-// Prevent Render sleep spam
-setInterval(() => {
-  console.log("Bot still alive...");
-}, 30000);
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if(connection === 'close') {
+            const reason = lastDisconnect.error?.output?.statusCode;
+            console.log('Disconnected:', reason);
+        } else if(connection === 'open') {
+            console.log('Bot connected!');
+        }
+    });
+
+    // -------------------
+    // Command handling
+    // -------------------
+    sock.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const sender = msg.key.remoteJid;
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (!text) return;
+
+        const cmd = text.toLowerCase();
+
+        // --- START ---
+        if (cmd === '/start') {
+            await sock.sendMessage(sender, { text: 'Hello! Welcome to DOM-X Bot.\nUse /pair to get your pairing code.\nUse /help for commands.' });
+        }
+
+        // --- HELP ---
+        else if (cmd === '/help') {
+            await sock.sendMessage(sender, { text: 'Available commands:\n/start - Welcome message\n/pair - Get pairing code\n/help - Show commands' });
+        }
+
+        // --- PAIR ---
+        else if (cmd === '/pair') {
+            try {
+                // fetch pairing code from your website
+                const res = await axios.get(`https://domgen-bot2.onrender.com/code?number=${sender.replace('@s.whatsapp.net','')}`);
+                const code = res.data.code || Math.floor(100000 + Math.random() * 900000).toString();
+                pairingCodes[sender] = code;
+
+                await sock.sendMessage(sender, { text: `Your pairing code is:\n${code}\nEnter this code in your website to link your device.` });
+            } catch (err) {
+                await sock.sendMessage(sender, { text: 'Error fetching pairing code. Try again later.' });
+                console.error(err);
+            }
+        }
+    });
+
+})();
